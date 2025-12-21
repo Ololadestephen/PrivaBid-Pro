@@ -1,0 +1,94 @@
+/* app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 20, 15, 40;
+  --background-end-rgb: 10, 5, 30;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+}
+
+/* Custom gradient classes */
+.bg-gradient-primary {
+  background: linear-gradient(135deg, #8B5CF6 0%, #EC4899 100%);
+}
+
+.bg-gradient-to-br {
+  background-image: linear-gradient(to bottom right, var(--tw-gradient-stops));
+}
+
+.text-gradient-primary {
+  background: linear-gradient(135deg, #8B5CF6 0%, #EC4899 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Custom colors */
+.bg-deep-violet {
+  background-color: #2A0B45;
+}
+
+.bg-obsidian {
+  background-color: #0A0520;
+}
+
+.bg-electric-purple {
+  background-color: #8B5CF6;
+}
+
+.bg-neon-cyan {
+  background-color: #00F5FF;
+}
+
+.bg-hot-pink {
+  background-color: #EC4899;
+}
+
+.text-electric-purple {
+  color: #8B5CF6;
+}
+
+.text-neon-cyan {
+  color: #00F5FF;
+}
+
+.text-hot-pink {
+  color: #EC4899;
+}
+
+.border-electric-purple {
+  border-color: #8B5CF6;
+}
+
+.shadow-electric-purple {
+  --tw-shadow-color: #8B5CF6;
+}
+
+/* Custom utilities */
+.backdrop-blur-sm {
+  backdrop-filter: blur(8px);
+}
+
+.bg-clip-text {
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
