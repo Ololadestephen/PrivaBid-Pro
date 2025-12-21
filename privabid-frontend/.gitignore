@@ -38,3 +38,8 @@ coverage/
 *.mkv
 *.zip
 *.dmg
+
+# Environment files
+.env.local
+.env*.local
+.env

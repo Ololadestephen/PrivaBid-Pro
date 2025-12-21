@@ -1,4 +1,4 @@
-// app/dashboard/page.tsx - UPDATED (with inline ABI)
+// app/dashboard/page.tsx - UPDATED (with inline ABI + Sepolia guard)
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -103,9 +103,31 @@ export default function DashboardPage() {
   const [withdrawing, setWithdrawing] = useState<number | null>(null);
   const [declaringWinner, setDeclaringWinner] = useState<number | null>(null);
 
+  // Sepolia network guard: null = unknown, true = correct, false = wrong
+  const [isCorrectNetwork, setIsCorrectNetwork] = useState<boolean | null>(null);
+
   useEffect(() => {
-    loadDashboard();
+    const checkNetwork = async () => {
+      if (typeof window === 'undefined' || !window.ethereum) {
+        setIsCorrectNetwork(false);
+        return;
+      }
+      try {
+        const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+        setIsCorrectNetwork(chainId === '0xaa36a7'); // Sepolia
+      } catch (e) {
+        setIsCorrectNetwork(false);
+      }
+    };
+    checkNetwork();
   }, []);
+
+  // Only load dashboard after network is confirmed correct
+  useEffect(() => {
+    if (isCorrectNetwork) {
+      loadDashboard();
+    }
+  }, [isCorrectNetwork]);
 
   async function loadDashboard() {
     try {
@@ -348,6 +370,30 @@ export default function DashboardPage() {
     } catch (error: any) {
       setError(`Failed to settle auction: ${error.message}`);
     }
+  }
+
+  // If network check completed and it's the wrong network, show the wrong-network UI
+  if (isCorrectNetwork === false) {
+    return (
+      <div className="container mx-auto px-4 py-16 text-center">
+        <div className="text-6xl mb-4">🌐</div>
+        <h2 className="text-2xl font-bold mb-2">Wrong Network</h2>
+        <p className="text-gray-400 mb-4">
+          Please switch to <strong>Sepolia Testnet</strong>
+        </p>
+        <button
+          onClick={async () => {
+            await window.ethereum?.request({
+              method: 'wallet_switchEthereumChain',
+              params: [{ chainId: '0xaa36a7' }],
+            });
+          }}
+          className="px-6 py-3 bg-electric-purple text-white rounded-lg hover:opacity-90"
+        >
+          Switch to Sepolia
+        </button>
+      </div>
+    );
   }
 
   if (loading) {

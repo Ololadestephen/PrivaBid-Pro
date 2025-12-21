@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
 import Navigation from '@/components/Navigation'
+import NetworkChecker from '@/components/NetworkChecker'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -18,12 +19,15 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <head>
-        {/* You can add any head elements here if needed */}
+        {/* Additional head elements can be added here */}
       </head>
       <body 
         className={`${inter.className} min-h-screen bg-gradient-neon text-white antialiased`}
         suppressHydrationWarning
       >
+        {/* ✅ Network Checker added at the root level */}
+        <NetworkChecker />
+
         <div className="min-h-screen">
           {/* Animated background elements */}
           <div className="fixed inset-0 overflow-hidden pointer-events-none">
@@ -32,16 +36,16 @@ export default function RootLayout({
             <div className="absolute bottom-40 right-1/4 w-60 h-60 bg-neon-cyan/10 rounded-full blur-3xl animate-pulse delay-500"></div>
           </div>
           
-          <header className="relative border-b border-electric-purple/20 bg-obsidian/70 backdrop-blur-sm">
+          <header className="relative border-b border-electric-purple/20 bg-obsidian/70 backdrop-blur-sm z-50">
             <Navigation />
           </header>
           
-          <main className="relative">
+          <main className="relative z-10">
             {children}
           </main>
           
           {/* Footer */}
-          <footer className="mt-12 pt-8 pb-6 border-t border-electric-purple/20 bg-obsidian/70 backdrop-blur-sm">
+          <footer className="relative mt-12 pt-8 pb-6 border-t border-electric-purple/20 bg-obsidian/70 backdrop-blur-sm z-20">
             <div className="container mx-auto px-4">
               <div className="flex flex-col md:flex-row justify-between items-center">
                 <div className="mb-6 md:mb-0">
@@ -62,6 +66,7 @@ export default function RootLayout({
                     <a 
                       href="https://sepolia.etherscan.io/address/0xd2db4e3BB54a014177F5a58A6F00d3db3452a4a3"
                       target="_blank"
+                      rel="noopener noreferrer"
                       className="text-neon-cyan hover:text-neon-cyan/80 hover:underline"
                     >
                       View Contract on Etherscan
