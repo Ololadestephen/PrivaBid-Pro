@@ -1,5 +1,6 @@
 'use client';
 
+
 import { useState, useEffect } from 'react';
 import { ethers } from 'ethers';
 import Link from 'next/link';
@@ -15,7 +16,6 @@ import {
 } from 'react-icons/fa';
 
 const CONTRACT_ADDRESS = '0xd2db4e3BB54a014177F5a58A6F00d3db3452a4a3';
-const SEPOLIA_CHAIN_ID = '0xaa36a7'; // Sepolia Hex ID
 
 const CONTRACT_ABI = [
   "function nextAuctionId() view returns (uint256)",
@@ -44,75 +44,81 @@ export default function AuctionsPage() {
   const [debugInfo, setDebugInfo] = useState<any>(null);
   const [totalAuctions, setTotalAuctions] = useState(0);
   const [showDebug, setShowDebug] = useState(false);
-  
-  // ✅ Network State
+
+  // Sepolia network guard: null = checking, true = correct, false = wrong
   const [isCorrectNetwork, setIsCorrectNetwork] = useState<boolean | null>(null);
 
   useEffect(() => {
-    checkNetworkAndFetch();
-    
-    // Listen for network changes
-    if (window.ethereum) {
-      window.ethereum.on('chainChanged', () => window.location.reload());
-    }
+    const checkNetwork = async () => {
+      if (typeof window === 'undefined' || !window.ethereum) {
+        setIsCorrectNetwork(false);
+        return;
+      }
+      try {
+        const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+        setIsCorrectNetwork(chainId === '0xaa36a7'); // Sepolia
+      } catch (e) {
+        setIsCorrectNetwork(false);
+      }
+    };
+    checkNetwork();
   }, []);
 
-  async function checkNetworkAndFetch() {
-    if (window.ethereum) {
-      const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-      const isSepolia = chainId === SEPOLIA_CHAIN_ID;
-      setIsCorrectNetwork(isSepolia);
-      
-      if (isSepolia) {
-        fetchAllAuctions();
-      } else {
-        setLoading(false);
-      }
-    } else {
-      setError('Please install MetaMask to view auctions.');
-      setLoading(false);
+  // Only fetch auctions after network is confirmed correct
+  useEffect(() => {
+    if (isCorrectNetwork) {
+      fetchAllAuctions();
     }
-  }
-
-  async function handleSwitchNetwork() {
-    try {
-      await window.ethereum.request({
-        method: 'wallet_switchEthereumChain',
-        params: [{ chainId: SEPOLIA_CHAIN_ID }],
-      });
-    } catch (err) {
-      console.error("Failed to switch network", err);
-    }
-  }
+    // If network is false or still null, do not call fetchAllAuctions here.
+  }, [isCorrectNetwork]);
 
   async function fetchAllAuctions() {
     try {
       setLoading(true);
       setError('');
       
+      if (!window.ethereum) {
+        throw new Error('Please install MetaMask');
+      }
+      console.log('Contract Address:', process.env.NEXT_PUBLIC_CONTRACT_ADDRESS);
+      console.log('All env:', process.env);
+
+
       const provider = new ethers.BrowserProvider(window.ethereum);
       const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
       
+      // Test connection first
       const testMessage = await contract.getTestMessage();
+      
+      // Get total number of auctions
       const nextId = await contract.nextAuctionId();
       const total = Number(nextId);
       setTotalAuctions(total);
       
+      console.log(`Found ${total} total auctions`);
+      
+      // Fetch ALL auctions
       const auctionPromises = [];
       for (let i = 0; i < total; i++) {
         auctionPromises.push(fetchAuctionInfo(contract, i));
       }
       
       const results = await Promise.allSettled(auctionPromises);
-      const validAuctions: AuctionCard[] = [];
       
-      results.forEach((result) => {
+      const validAuctions: AuctionCard[] = [];
+      const errors: string[] = [];
+      
+      results.forEach((result, index) => {
         if (result.status === 'fulfilled' && result.value) {
           validAuctions.push(result.value);
+        } else {
+          errors.push(`Auction ${index}: ${result.reason}`);
         }
       });
       
+      // Sort by ID (newest first)
       validAuctions.sort((a, b) => b.id - a.id);
+      
       setAuctions(validAuctions);
       
       setDebugInfo({
@@ -120,6 +126,7 @@ export default function AuctionsPage() {
         testMessage,
         totalAuctions: total,
         fetchedAuctions: validAuctions.length,
+        failedAuctions: errors.length,
       });
       
     } catch (error: any) {
@@ -133,14 +140,18 @@ export default function AuctionsPage() {
   async function fetchAuctionInfo(contract: ethers.Contract, auctionId: number): Promise<AuctionCard | null> {
     try {
       const auctionInfo = await contract.getAuctionInfo(auctionId);
-      const [owner, description, endTime, isActive, bidCount, pendingWinner, , settled, bondAmount] = auctionInfo;
       
+      // Parse the auction data
+      const [owner, description, endTime, isActive, bidCount, pendingWinner, hasBids, settled, bondAmount] = auctionInfo;
+      
+      // Extract title from description (format: "Title | Description")
       const [title, ...descParts] = description.split(' | ');
+      const cleanDescription = descParts.join(' | ') || 'No description provided';
       
       return {
         id: auctionId,
         title: title || `Auction #${auctionId}`,
-        description: descParts.join(' | ') || 'No description provided',
+        description: cleanDescription,
         endTime: new Date(Number(endTime) * 1000),
         isActive: Boolean(isActive),
         bidCount: Number(bidCount),
@@ -150,32 +161,38 @@ export default function AuctionsPage() {
         bondAmount: ethers.formatEther(bondAmount)
       };
     } catch (error) {
+      console.error(`Error fetching auction ${auctionId}:`, error);
       return null;
     }
   }
 
-  // ✅ LOADING STATE
-  if (loading) {
+  // While network check is in progress
+  if (isCorrectNetwork === null) {
     return (
-      <div className="container mx-auto px-4 py-32 text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-electric-purple mb-4 mx-auto"></div>
-        <p className="text-gray-400">Syncing with Sepolia...</p>
+      <div className="container mx-auto px-4 py-16 text-center">
+        <FaSpinner className="animate-spin mx-auto mb-4 text-3xl" />
+        <p className="text-gray-400">Checking network...</p>
       </div>
     );
   }
 
-  // ✅ NETWORK GUARD UI
+  // If network check completed and it's the wrong network, show the wrong-network UI
   if (isCorrectNetwork === false) {
     return (
-      <div className="container mx-auto px-4 py-32 text-center">
-        <div className="text-7xl mb-6">🌐</div>
-        <h2 className="text-3xl font-bold mb-4">Network Mismatch</h2>
-        <p className="text-gray-400 mb-8 max-w-md mx-auto">
-          PrivaBid Pro operates on the <strong>Sepolia Testnet</strong>. Please switch your wallet to continue.
+      <div className="container mx-auto px-4 py-16 text-center">
+        <div className="text-6xl mb-4">🌐</div>
+        <h2 className="text-2xl font-bold mb-2">Wrong Network</h2>
+        <p className="text-gray-400 mb-4">
+          Please switch to <strong>Sepolia Testnet</strong> in MetaMask
         </p>
         <button
-          onClick={handleSwitchNetwork}
-          className="px-8 py-4 bg-gradient-to-r from-electric-purple to-deep-violet text-white rounded-xl font-bold hover:scale-105 transition-transform shadow-lg shadow-purple-500/20"
+          onClick={async () => {
+            await window.ethereum?.request({
+              method: 'wallet_switchEthereumChain',
+              params: [{ chainId: '0xaa36a7' }],
+            });
+          }}
+          className="px-6 py-3 bg-electric-purple text-white rounded-lg hover:opacity-90"
         >
           Switch to Sepolia
         </button>
@@ -183,15 +200,21 @@ export default function AuctionsPage() {
     );
   }
 
-  // ✅ MAIN UI
+  if (loading) {
+    return (
+      <div className="container mx-auto px-4 py-16 text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-electric-purple mb-4 mx-auto"></div>
+        <p className="text-gray-400">Loading auctions...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="container mx-auto px-4 py-8">
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
         <div>
-          <h1 className="text-4xl font-bold mb-2 bg-gradient-primary bg-clip-text text-transparent inline-block">
-            Private Auctions
-          </h1>
+          <h1 className="text-3xl font-bold mb-2">Private Auctions</h1>
           <p className="text-gray-400">
             {auctions.length} active auctions • {totalAuctions} total created
           </p>
@@ -199,7 +222,7 @@ export default function AuctionsPage() {
         
         <Link
           href="/auctions/create"
-          className="px-6 py-3 bg-electric-purple text-white rounded-lg hover:opacity-90 flex items-center gap-3 group transition-all"
+          className="px-6 py-3 bg-electric-purple text-white rounded-lg hover:opacity-90 flex items-center gap-3 group"
         >
           <FaPlus className="group-hover:rotate-90 transition-transform" />
           Create New Auction
@@ -207,108 +230,273 @@ export default function AuctionsPage() {
       </div>
 
       {/* Stats Bar */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-12">
-        <StatCard icon={<FaEthereum />} label="Total Created" value={totalAuctions} />
-        <StatCard icon={<FaClock />} label="Active" value={auctions.filter(a => a.isActive && a.endTime > new Date()).length} />
-        <StatCard icon={<FaUsers />} label="Total Bids" value={auctions.reduce((sum, a) => sum + a.bidCount, 0)} />
-        <StatCard icon={<FaEthereum />} label="Entry Bond" value={`${auctions[0]?.bondAmount || '0.01'} ETH`} />
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div className="bg-obsidian/60 p-4 rounded-xl border border-electric-purple/30">
+          <div className="flex items-center text-gray-400 mb-1">
+            <FaEthereum className="mr-2" />
+            <span className="text-sm">Total Auctions</span>
+          </div>
+          <div className="text-2xl font-bold">{totalAuctions}</div>
+        </div>
+        
+        <div className="bg-obsidian/60 p-4 rounded-xl border border-electric-purple/30">
+          <div className="flex items-center text-gray-400 mb-1">
+            <FaClock className="mr-2" />
+            <span className="text-sm">Active Now</span>
+          </div>
+          <div className="text-2xl font-bold">
+            {auctions.filter(a => a.isActive && a.endTime > new Date()).length}
+          </div>
+        </div>
+        
+        <div className="bg-obsidian/60 p-4 rounded-xl border border-electric-purple/30">
+          <div className="flex items-center text-gray-400 mb-1">
+            <FaUsers className="mr-2" />
+            <span className="text-sm">Total Bids</span>
+          </div>
+          <div className="text-2xl font-bold">
+            {auctions.reduce((sum, auction) => sum + auction.bidCount, 0)}
+          </div>
+        </div>
+        
+        <div className="bg-obsidian/60 p-4 rounded-xl border border-electric-purple/30">
+          <div className="flex items-center text-gray-400 mb-1">
+            <FaEthereum className="mr-2" />
+            <span className="text-sm">Bond Amount</span>
+          </div>
+          <div className="text-2xl font-bold flex items-center gap-1">
+            <FaEthereum className="text-electric-purple" />
+            {auctions.length > 0 ? auctions[0].bondAmount : '0.01'} ETH
+          </div>
+        </div>
       </div>
 
-      {/* Auctions Grid */}
-      {auctions.length === 0 ? (
-        <EmptyState />
-      ) : (
-        <div className="space-y-12">
-          <AuctionSection title="Active Auctions" filter={(a) => a.isActive && a.endTime > new Date()} auctions={auctions} />
-          <AuctionSection title="Past Auctions" filter={(a) => !a.isActive || a.endTime <= new Date()} auctions={auctions} />
+      {/* Error Message */}
+      {error && (
+        <div className="mb-6 p-4 bg-red-900/30 border border-red-500/50 rounded-lg">
+          <div className="flex items-center gap-2 text-red-400">
+            <FaExclamationTriangle />
+            <span className="font-bold">Error:</span>
+          </div>
+          <p className="mt-1">{error}</p>
+          <button
+            onClick={fetchAllAuctions}
+            className="mt-3 px-4 py-2 bg-red-700 text-white rounded-lg text-sm hover:bg-red-600"
+          >
+            Try Again
+          </button>
         </div>
       )}
 
-      {/* Footer / Debug Section */}
-      <div className="mt-20 pt-10 border-t border-white/10 text-center">
-         <button onClick={() => setShowDebug(!showDebug)} className="text-xs text-gray-500 hover:text-white transition-colors mb-4">
-            {showDebug ? '[-] Hide System Diagnostics' : '[+] Show System Diagnostics'}
-         </button>
-         {showDebug && debugInfo && (
-           <pre className="text-[10px] text-yellow-500/70 bg-black/40 p-4 rounded-lg inline-block text-left">
-             {JSON.stringify(debugInfo, null, 2)}
-           </pre>
-         )}
+      {/* Auctions Grid */}
+      {auctions.length === 0 ? (
+        <div className="text-center py-16">
+          <div className="text-6xl mb-4">🏷️</div>
+          <h2 className="text-2xl font-bold mb-2">No Auctions Found</h2>
+          <p className="text-gray-400 mb-6">
+            Create your first private auction to get started
+          </p>
+          <Link
+            href="/auctions/create"
+            className="px-8 py-3 bg-electric-purple text-white rounded-lg hover:opacity-90 flex items-center gap-2 mx-auto inline-block"
+          >
+            <FaPlus /> Create First Auction
+          </Link>
+        </div>
+      ) : (
+        <>
+          {/* Active Auctions */}
+          <div className="mb-10">
+            <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+              Active Auctions
+            </h2>
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {auctions
+                .filter(auction => auction.isActive && auction.endTime > new Date())
+                .map((auction) => (
+                  <AuctionCard key={auction.id} auction={auction} />
+                ))}
+            </div>
+          </div>
+
+          {/* Ended Auctions */}
+          <div>
+            <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <div className="w-2 h-2 bg-gray-500 rounded-full"></div>
+              Ended Auctions
+            </h2>
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {auctions
+                .filter(auction => !auction.isActive || auction.endTime <= new Date())
+                .map((auction) => (
+                  <AuctionCard key={auction.id} auction={auction} />
+                ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Debug Info Section (at the bottom) */}
+      <div className="mt-12 pt-8 border-t border-gray-800">
+        {/* Debug Toggle Button */}
+        <button
+          onClick={() => setShowDebug(!showDebug)}
+          className="flex items-center gap-2 text-gray-500 hover:text-gray-300 mx-auto mb-6"
+        >
+          <FaBug />
+          {showDebug ? 'Hide Debug Info' : 'Show Debug Info'}
+        </button>
+
+        {/* Debug Panel */}
+        {showDebug && debugInfo && (
+          <div className="mb-6 p-4 bg-gray-900 rounded-lg border border-yellow-500/30">
+            <h3 className="font-bold text-yellow-400 mb-3 flex items-center gap-2">
+              <FaExclamationTriangle /> Contract Debug Info
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div className="space-y-2">
+                <p><span className="text-gray-400">Contract Address:</span></p>
+                <p className="font-mono text-xs break-all">{debugInfo.contractAddress}</p>
+                <p><span className="text-gray-400">Status:</span> {debugInfo.testMessage || 'Unknown'}</p>
+              </div>
+              <div className="space-y-2">
+                <p><span className="text-gray-400">Total Auctions:</span> {debugInfo.totalAuctions}</p>
+                <p><span className="text-gray-400">Successfully Loaded:</span> {debugInfo.fetchedAuctions || 0}</p>
+                <p><span className="text-gray-400">Failed to Load:</span> {debugInfo.failedAuctions || 0}</p>
+              </div>
+            </div>
+            
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={fetchAllAuctions}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 flex items-center gap-2"
+              >
+                <FaSpinner className={loading ? 'animate-spin' : ''} />
+                Refresh Data
+              </button>
+              
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(JSON.stringify(debugInfo, null, 2));
+                  alert('Debug info copied to clipboard!');
+                }}
+                className="px-4 py-2 bg-gray-700 text-white rounded-lg text-sm hover:bg-gray-600"
+              >
+                Copy Debug Info
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Contract Info Footer */}
+        <div className="text-center">
+          <div className="inline-flex items-center gap-4 text-sm text-gray-500 mb-2">
+            <span>Contract: {CONTRACT_ADDRESS.slice(0, 8)}...{CONTRACT_ADDRESS.slice(-6)}</span>
+            <span>•</span>
+            <span>Network: Sepolia</span>
+            <span>•</span>
+            <span>Loaded: {auctions.length}/{totalAuctions} auctions</span>
+          </div>
+          <p className="text-xs text-gray-600">
+            Some auctions may not display if they have invalid data or are inactive.
+          </p>
+        </div>
       </div>
     </div>
   );
 }
 
-// --- SUB-COMPONENTS ---
-
-function StatCard({ icon, label, value }: { icon: any, label: string, value: any }) {
-  return (
-    <div className="bg-obsidian/40 backdrop-blur-md p-5 rounded-2xl border border-white/10 hover:border-electric-purple/40 transition-colors">
-      <div className="flex items-center text-gray-400 mb-2 gap-2 text-sm uppercase tracking-wider">
-        {icon} {label}
-      </div>
-      <div className="text-3xl font-bold text-white">{value}</div>
-    </div>
-  );
-}
-
-function AuctionSection({ title, filter, auctions }: { title: string, filter: (a: AuctionCard) => boolean, auctions: AuctionCard[] }) {
-  const filtered = auctions.filter(filter);
-  if (filtered.length === 0) return null;
+// Auction Card Component
+function AuctionCard({ auction }: { auction: AuctionCard }) {
+  const timeRemaining = auction.endTime.getTime() - Date.now();
+  const isEnded = timeRemaining <= 0;
+  const hoursRemaining = Math.max(0, Math.floor(timeRemaining / (1000 * 60 * 60)));
+  const minutesRemaining = Math.max(0, Math.floor((timeRemaining % (1000 * 60 * 60)) / (1000 * 60)));
+  
+  const isActive = auction.isActive && !isEnded;
   
   return (
-    <section>
-      <h2 className="text-xl font-bold mb-6 flex items-center gap-3">
-        <span className={`w-2 h-2 rounded-full ${title.includes('Active') ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-gray-500'}`}></span>
-        {title}
-      </h2>
-      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filtered.map(a => <AuctionCardComponent key={a.id} auction={a} />)}
-      </div>
-    </section>
-  );
-}
-
-function AuctionCardComponent({ auction }: { auction: AuctionCard }) {
-  const isEnded = auction.endTime.getTime() <= Date.now();
-  return (
-    <Link href={`/bid/${auction.id}`} className="group">
-      <div className="bg-obsidian/60 backdrop-blur-xl rounded-2xl border border-white/10 p-6 h-full hover:border-electric-purple/50 transition-all hover:-translate-y-1 shadow-xl">
+    <Link 
+      href={`/bid/${auction.id}`} 
+      className="group block"
+    >
+      <div className="bg-obsidian/60 backdrop-blur-sm rounded-xl border border-electric-purple/30 p-5 h-full hover:border-electric-purple/60 hover:bg-obsidian/80 transition-all hover:translate-y-[-2px]">
+        {/* Header */}
         <div className="flex justify-between items-start mb-4">
-          <h3 className="text-xl font-bold group-hover:text-electric-purple transition-colors truncate pr-4">{auction.title}</h3>
-          <span className="text-xs font-mono bg-white/10 px-2 py-1 rounded">#{auction.id}</span>
+          <div className="flex-1">
+            <h3 className="text-xl font-bold mb-1 group-hover:text-electric-purple transition-colors line-clamp-1">
+              {auction.title}
+            </h3>
+            <p className="text-sm text-gray-400 line-clamp-2">
+              {auction.description}
+            </p>
+          </div>
+          <div className={`px-3 py-1 rounded-lg text-sm ${
+            isActive 
+              ? 'bg-green-500/20 text-green-400' 
+              : 'bg-gray-700 text-gray-400'
+          }`}>
+            #{auction.id}
+          </div>
         </div>
-        <p className="text-gray-400 text-sm line-clamp-2 mb-6 h-10">{auction.description}</p>
         
-        <div className="grid grid-cols-2 gap-4 mb-6">
-          <div className="bg-white/5 p-3 rounded-xl text-center">
-            <p className="text-[10px] text-gray-500 uppercase">Bids</p>
-            <p className="font-bold">{auction.bidCount}</p>
-          </div>
-          <div className="bg-white/5 p-3 rounded-xl text-center">
-            <p className="text-[10px] text-gray-500 uppercase">Bond</p>
-            <p className="font-bold">{auction.bondAmount} ETH</p>
+        {/* Status Badge */}
+        <div className="mb-4">
+          <div className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
+            isActive
+              ? 'bg-green-900/30 text-green-400 border border-green-500/30'
+              : 'bg-gray-800 text-gray-400 border border-gray-700'
+          }`}>
+            {isActive ? (
+              <>
+                <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></div>
+                Active • {hoursRemaining}h {minutesRemaining}m left
+              </>
+            ) : (
+              <>
+                <div className="w-2 h-2 bg-gray-500 rounded-full mr-2"></div>
+                Ended
+              </>
+            )}
           </div>
         </div>
-
-        <div className="flex items-center justify-between pt-4 border-t border-white/5 text-xs text-gray-500">
-           <span>{isEnded ? 'Ended' : 'Active'}</span>
-           <span className="flex items-center gap-1 group-hover:text-electric-purple transition-colors">
-             Bid Now <FaExternalLinkAlt size={10} />
-           </span>
+        
+        {/* Stats */}
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="text-center p-2 bg-deep-violet/30 rounded-lg">
+            <div className="text-xs text-gray-400 mb-1">Bids</div>
+            <div className="font-bold text-lg">{auction.bidCount}</div>
+          </div>
+          
+          <div className="text-center p-2 bg-deep-violet/30 rounded-lg">
+            <div className="text-xs text-gray-400 mb-1">Bond</div>
+            <div className="font-bold text-lg flex items-center justify-center gap-1">
+              <FaEthereum className="text-electric-purple text-sm" />
+              {auction.bondAmount}
+            </div>
+          </div>
+          
+          <div className="text-center p-2 bg-deep-violet/30 rounded-lg">
+            <div className="text-xs text-gray-400 mb-1">Status</div>
+            <div className={`font-bold text-lg ${auction.settled ? 'text-green-400' : 'text-yellow-400'}`}>
+              {auction.settled ? 'Settled' : 'Pending'}
+            </div>
+          </div>
+        </div>
+        
+        {/* Footer */}
+        <div className="flex items-center justify-between pt-4 border-t border-electric-purple/20">
+          <div className="text-xs text-gray-500">
+            {auction.owner.slice(0, 6)}...{auction.owner.slice(-4)}
+          </div>
+          <div className="flex items-center gap-2 text-electric-purple text-sm">
+            <span>View Auction</span>
+            <FaExternalLinkAlt className="text-xs group-hover:translate-x-1 transition-transform" />
+          </div>
         </div>
       </div>
     </Link>
   );
-}
-
-function EmptyState() {
-  return (
-    <div className="text-center py-20 bg-obsidian/20 rounded-3xl border border-dashed border-white/10">
-      <div className="text-5xl mb-4">🏷️</div>
-      <h2 className="text-2xl font-bold mb-2 text-white">No Auctions Yet</h2>
-      <p className="text-gray-400 mb-8">Be the first to create a secure, encrypted auction.</p>
-      <Link href="/auctions/create" className="px-8 py-3 bg-electric-purple rounded-lg font-bold">Create Auction</Link>
-    </div>
-  );
-}
+}// Force redeploy Sun Dec 21 13:25:05 WAT 2025
