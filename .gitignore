@@ -1,50 +1,16 @@
-# Dependencies
-node_modules/
+# Frontend
 privabid-frontend/node_modules/
+privabid-frontend/.next/
+privabid-frontend/.env.local
 
-# Environment
-.env
-.env.local
-*.env
-secrets/
-*.key
-*.pem
-
-# Build outputs
+# Contracts
+privabid-fhevm/node_modules/
 privabid-fhevm/artifacts/
 privabid-fhevm/cache/
 privabid-fhevm/types/
-privabid-frontend/.next/
-privabid-frontend/out/
-dist/
-build/
+privabid-fhevm/.env
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# System
+# Common
 .DS_Store
-Thumbs.db
-
-# Logs
+.env
 *.log
-npm-debug.log*
-yarn-debug.log*
-
-# Coverage
-coverage/
-.nyc_output
-
-# Temporary files
-*.tmp
-temp/
-
-# Large files
-*.mp4
-*.mkv
-*.zip
-*.dmg
-*.iso
