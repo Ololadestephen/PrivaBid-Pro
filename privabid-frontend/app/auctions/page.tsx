@@ -1,5 +1,6 @@
-// app/auctions/page.tsx - FINAL VERSION
+
 'use client';
+
 
 import { useState, useEffect } from 'react';
 import { ethers } from 'ethers';
@@ -45,6 +46,8 @@ export default function AuctionsPage() {
   const [totalAuctions, setTotalAuctions] = useState(0);
   const [showDebug, setShowDebug] = useState(false);
 
+  
+
   useEffect(() => {
     fetchAllAuctions();
   }, []);
@@ -57,6 +60,9 @@ export default function AuctionsPage() {
       if (!window.ethereum) {
         throw new Error('Please install MetaMask');
       }
+      console.log('Contract Address:', process.env.NEXT_PUBLIC_CONTRACT_ADDRESS);
+    console.log('All env:', process.env);
+
 
       const provider = new ethers.BrowserProvider(window.ethereum);
       const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
@@ -439,4 +445,4 @@ function AuctionCard({ auction }: { auction: AuctionCard }) {
       </div>
     </Link>
   );
-}
+}// Force redeploy Sun Dec 21 13:25:05 WAT 2025
