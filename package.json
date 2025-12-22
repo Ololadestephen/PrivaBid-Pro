@@ -1,0 +1,6 @@
+{
+	"dependencies": {
+		"@fhevm/sdk": "0.7.0-20",
+		"ethers": "^6.16.0"
+	}
+}
