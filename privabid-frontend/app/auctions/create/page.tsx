@@ -8,10 +8,15 @@ import { FaPlus, FaArrowLeft, FaSpinner, FaCheck, FaExclamationTriangle } from '
 
 const CONTRACT_ADDRESS = '0xd2db4e3BB54a014177F5a58A6F00d3db3452a4a3';
 
+// NOTE: added nextAuctionId() so we can read the ID after creation
 const CONTRACT_ABI = [
   "function createAuction(string description, uint256 durationMinutes) returns (uint256)",
   "function getTestMessage() view returns (string)",
-  "function BID_BOND() view returns (uint256)"
+  "function BID_BOND() view returns (uint256)",
+  "function nextAuctionId() view returns (uint256)",
+
+  // include the AuctionCreated event ABI to allow parsing logs as a fallback
+  "event AuctionCreated(uint256 indexed auctionId, address owner, string description, uint256 endTime)"
 ];
 
 export default function CreateAuctionPage() {
@@ -85,24 +90,56 @@ export default function CreateAuctionPage() {
       const receipt = await tx.wait();
       
       if (receipt?.status === 1) {
-        // Get the new auction ID
-        const nextId = await contract.nextAuctionId();
-        const newAuctionId = Number(nextId) - 1;
+        // Try to read nextAuctionId() (preferred)
+        let newAuctionId: number | null = null;
+
+        try {
+          // contract has nextAuctionId in ABI — call it
+          const nextId = await contract.nextAuctionId();
+          // nextAuctionId returns the next ID, so new auction = nextId - 1
+          newAuctionId = Number(nextId) - 1;
+        } catch (readErr) {
+          // If that fails, fall back to parsing the AuctionCreated event from logs
+          try {
+            const iface = new ethers.Interface([
+              "event AuctionCreated(uint256 indexed auctionId, address owner, string description, uint256 endTime)"
+            ]);
+            for (const log of receipt.logs || []) {
+              try {
+                const parsed = iface.parseLog(log);
+                if (parsed && parsed.name === 'AuctionCreated' && parsed.args && parsed.args.auctionId !== undefined) {
+                  newAuctionId = Number(parsed.args.auctionId.toString());
+                  break;
+                }
+              } catch (parseErr) {
+                // ignore logs that don't match
+              }
+            }
+          } catch (parseFallbackErr) {
+            // ignore
+          }
+        }
+
+        if (newAuctionId !== null && !isNaN(newAuctionId)) {
+          setCreatedAuctionId(newAuctionId);
+          setSuccess(`✅ Auction #${newAuctionId} created successfully!`);
+          // Auto-redirect after delay
+          setTimeout(() => {
+            router.push(`/bid/${newAuctionId}`);
+          }, 3000);
+        } else {
+          // Successful tx but couldn't find the auction id — still notify user
+          setSuccess('✅ Auction created successfully!');
+          // keep createdAuctionId null (user can manually navigate)
+        }
         
-        setCreatedAuctionId(newAuctionId);
-        setSuccess(`✅ Auction #${newAuctionId} created successfully!`);
-        
-        // Auto-redirect after delay
-        setTimeout(() => {
-          router.push(`/bid/${newAuctionId}`);
-        }, 3000);
       } else {
         throw new Error('Transaction failed');
       }
       
     } catch (error: any) {
       console.error('Create auction error:', error);
-      setError(error.message);
+      setError(error?.message || String(error));
     } finally {
       setLoading(false);
     }

@@ -1,7 +1,7 @@
-// app/dashboard/page.tsx - UPDATED (with inline ABI + Sepolia guard)
+// app/dashboard/page.tsx - FIXED VERSION WITH AUTO-SETTLE
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
 import Link from 'next/link';
 import { 
@@ -17,12 +17,26 @@ import {
   FaExclamationTriangle,
   FaExternalLinkAlt,
   FaEye,
-  FaEyeSlash,
   FaHistory,
-  FaGavel
+  FaGavel,
+  FaRobot
 } from 'react-icons/fa';
 
-// Inline ABI to avoid import issues
+// Environment variables for flexibility
+const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || '0xd2db4e3BB54a014177F5a58A6F00d3db3452a4a3';
+const TARGET_NETWORK_ID = process.env.NEXT_PUBLIC_TARGET_NETWORK_ID || '0xaa36a7'; // Sepolia default
+const NETWORK_NAMES: Record<string, string> = {
+  '0x1': 'Ethereum Mainnet',
+  '0xaa36a7': 'Sepolia Testnet',
+  '0x5': 'Goerli Testnet',
+  '0x89': 'Polygon Mainnet'
+};
+
+// Auto-settle configuration
+const AUTO_SETTLE_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000; // 24 hours
+const AUTO_SETTLE_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Inline ABI (enhanced with hasBid function)
 const CONTRACT_ABI = [
   "function nextAuctionId() view returns (uint256)",
   "function getAuctionInfo(uint256 auctionId) view returns (address, string, uint256, bool, uint256, address, bool, bool, uint256)",
@@ -43,11 +57,11 @@ const CONTRACT_ABI = [
   "function isMinimumIncrementSet(uint256 auctionId) view returns (bool)",
   "function viewMyEncryptedBid(uint256 auctionId, bytes32 key) view returns (bool, uint256, bool, bool)",
   "function getTestMessage() view returns (string)",
-  "function BID_BOND() view returns (uint256)"
+  "function BID_BOND() view returns (uint256)",
+  "function hasBid(uint256 auctionId, address bidder) view returns (bool)" // Added for accurate bid detection
 ];
 
-const CONTRACT_ADDRESS = '0xd2db4e3BB54a014177F5a58A6F00d3db3452a4a3';
-
+// Interfaces
 interface AuctionInfo {
   id: number;
   title: string;
@@ -88,7 +102,16 @@ interface OwnerAuction {
   canEnd: boolean;
   canSettle: boolean;
   canDeclareWinner: boolean;
+  canAutoSettle: boolean;
 }
+
+// Subcomponents
+import WalletInfo from './components/WalletInfo';
+import AuctionList from './components/AuctionList';
+import UserBidsSection from './components/UserBidsSection';
+import OwnerAuctionsSection from './components/OwnerAuctionsSection';
+import StatusMessage from './components/StatusMessage';
+import NetworkGuard from './components/NetworkGuard';
 
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
@@ -102,10 +125,12 @@ export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<'bids' | 'auctions' | 'manage'>('bids');
   const [withdrawing, setWithdrawing] = useState<number | null>(null);
   const [declaringWinner, setDeclaringWinner] = useState<number | null>(null);
-
-  // Sepolia network guard: null = unknown, true = correct, false = wrong
   const [isCorrectNetwork, setIsCorrectNetwork] = useState<boolean | null>(null);
+  const [currentNetwork, setCurrentNetwork] = useState<string>('');
+  const [autoSettling, setAutoSettling] = useState<number | null>(null);
+  const [autoSettleEnabled, setAutoSettleEnabled] = useState(true);
 
+  // Check network and set up event listeners
   useEffect(() => {
     const checkNetwork = async () => {
       if (typeof window === 'undefined' || !window.ethereum) {
@@ -114,12 +139,42 @@ export default function DashboardPage() {
       }
       try {
         const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-        setIsCorrectNetwork(chainId === '0xaa36a7'); // Sepolia
+        setCurrentNetwork(chainId);
+        setIsCorrectNetwork(chainId === TARGET_NETWORK_ID);
       } catch (e) {
+        console.error('Network check error:', e);
         setIsCorrectNetwork(false);
       }
     };
+
+    // Set up event listeners for network/account changes
+    const handleAccountsChanged = (accounts: string[]) => {
+      if (accounts.length === 0) {
+        setAccount('');
+        setUserBids([]);
+        setOwnerAuctions([]);
+      } else {
+        loadDashboard();
+      }
+    };
+
+    const handleChainChanged = () => {
+      window.location.reload(); // Simplest approach
+    };
+
     checkNetwork();
+    
+    if (window.ethereum) {
+      window.ethereum.on('accountsChanged', handleAccountsChanged);
+      window.ethereum.on('chainChanged', handleChainChanged);
+    }
+
+    return () => {
+      if (window.ethereum) {
+        window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+        window.ethereum.removeListener('chainChanged', handleChainChanged);
+      }
+    };
   }, []);
 
   // Only load dashboard after network is confirmed correct
@@ -129,7 +184,35 @@ export default function DashboardPage() {
     }
   }, [isCorrectNetwork]);
 
-  async function loadDashboard() {
+  // Auto-settle check interval
+  useEffect(() => {
+    if (!autoSettleEnabled || !isCorrectNetwork || ownerAuctions.length === 0) return;
+
+    const checkAutoSettle = async () => {
+      const auctionsToSettle = ownerAuctions.filter(auction => 
+        auction.canAutoSettle && 
+        autoSettling !== auction.auctionId
+      );
+
+      for (const auction of auctionsToSettle) {
+        await handleAutoSettle(auction.auctionId, true); // true = auto-triggered
+        // Wait 10 seconds between auto-settles to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      }
+    };
+
+    const interval = setInterval(checkAutoSettle, AUTO_SETTLE_CHECK_INTERVAL_MS);
+    
+    // Initial check after 30 seconds
+    const initialTimer = setTimeout(checkAutoSettle, 30000);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(initialTimer);
+    };
+  }, [isCorrectNetwork, ownerAuctions, autoSettleEnabled, autoSettling]);
+
+  const loadDashboard = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
@@ -153,46 +236,66 @@ export default function DashboardPage() {
       const nextId = await contract.nextAuctionId();
       const totalAuctions = Number(nextId);
       
-      // Load all auctions
+      // Load all auctions in parallel using Promise.all
+      const auctionPromises = Array.from({ length: totalAuctions }, (_, i) =>
+        contract.getAuctionInfo(i).catch(() => null)
+      );
+      
+      const auctionResults = await Promise.all(auctionPromises);
+      
+      // Process auction results
       const auctions: AuctionInfo[] = [];
-      for (let i = 0; i < totalAuctions; i++) {
-        try {
-          const auctionInfo = await contract.getAuctionInfo(i);
-          const [title, ...descParts] = auctionInfo[1].split(' | ');
-          
-          auctions.push({
-            id: i,
-            title: title || `Auction #${i}`,
-            description: descParts.join(' | ') || '',
-            endTime: new Date(Number(auctionInfo[2]) * 1000),
-            isActive: Boolean(auctionInfo[3]),
-            bidCount: Number(auctionInfo[4]),
-            owner: auctionInfo[0],
-            pendingWinner: auctionInfo[5],
-            hasBids: Boolean(auctionInfo[6]),
-            settled: Boolean(auctionInfo[7]),
-            bondAmount: ethers.formatEther(auctionInfo[8])
-          });
-        } catch (e) {
-          // Skip auctions that fail to load
-        }
+      for (let i = 0; i < auctionResults.length; i++) {
+        const auctionInfo = auctionResults[i];
+        if (!auctionInfo) continue;
+        
+        const [title, ...descParts] = auctionInfo[1].split(' | ');
+        
+        auctions.push({
+          id: i,
+          title: title || `Auction #${i}`,
+          description: descParts.join(' | ') || '',
+          endTime: new Date(Number(auctionInfo[2]) * 1000),
+          isActive: Boolean(auctionInfo[3]),
+          bidCount: Number(auctionInfo[4]),
+          owner: auctionInfo[0],
+          pendingWinner: auctionInfo[5],
+          hasBids: Boolean(auctionInfo[6]),
+          settled: Boolean(auctionInfo[7]),
+          bondAmount: ethers.formatEther(auctionInfo[8])
+        });
       }
       
       setAllAuctions(auctions);
       
-      // Find user's bids
+      // Check user's bids and ownership in parallel
       const userBidsList: UserBid[] = [];
       const ownerAuctionsList: OwnerAuction[] = [];
       
-      for (const auction of auctions) {
+      const userCheckPromises = auctions.map(async (auction) => {
         // Check if user is owner
         const isOwner = auction.owner.toLowerCase() === userAddress.toLowerCase();
         
         // Check if user is pending winner
         const isWinner = auction.pendingWinner.toLowerCase() === userAddress.toLowerCase();
-        const isHighestBidder = isWinner; // Simplified
+        
+        // ACCURATE: Check if user has actually bid using contract function
+        let userHasBid = false;
+        try {
+          userHasBid = await contract.hasBid(auction.id, userAddress);
+        } catch (e) {
+          console.warn('hasBid function not available, falling back to winner check');
+          userHasBid = isWinner; // Fallback
+        }
+        
+        const isHighestBidder = isWinner;
         
         if (isOwner) {
+          // Calculate if auction can be auto-settled (ended > 24 hours ago)
+          const canAutoSettle = !auction.isActive && 
+                               !auction.settled && 
+                               auction.endTime.getTime() + AUTO_SETTLE_GRACE_PERIOD_MS < Date.now();
+          
           ownerAuctionsList.push({
             auctionId: auction.id,
             title: auction.title,
@@ -203,16 +306,33 @@ export default function DashboardPage() {
             settled: auction.settled,
             canEnd: auction.isActive && auction.endTime < new Date(),
             canSettle: !auction.isActive && !auction.settled,
-            canDeclareWinner: !auction.isActive && auction.hasBids && !auction.settled
+            canDeclareWinner: !auction.isActive && auction.hasBids && !auction.settled,
+            canAutoSettle
           });
         }
         
-        // Simplified: User has bid if they're the winner or if auction has bids
-        // In production, you'd need to check a mapping in the contract
-        const userHasBid = isWinner || (auction.bidCount > 0); // This is just for demo
-        
         if (userHasBid) {
-          const canWithdraw = !auction.isActive && !isWinner && auction.bidCount > 0;
+          // FIXED WITHDRAWAL LOGIC BASED ON CONTRACT ERROR
+          // Winners can only withdraw AFTER settlement
+          // Non-winners can withdraw after auction ends
+          let canWithdraw = false;
+          try {
+            canWithdraw = await contract.canWithdrawAdvanced(auction.id, userAddress);
+          } catch (e) {
+            // CORRECTED FALLBACK LOGIC:
+            // For winners: only if auction is settled
+            // For non-winners: if auction is not active
+            if (isWinner) {
+              canWithdraw = auction.settled && !auction.isActive;
+            } else {
+              canWithdraw = !auction.isActive && auction.bidCount > 0;
+            }
+          }
+          
+          // Additional safety check to prevent showing withdrawal for winners before settlement
+          if (isWinner && !auction.settled) {
+            canWithdraw = false;
+          }
           
           userBidsList.push({
             auctionId: auction.id,
@@ -220,7 +340,7 @@ export default function DashboardPage() {
             isWinner,
             isHighestBidder,
             canWithdraw,
-            hasWithdrawn: false, // You'd need to track this in your contract
+            hasWithdrawn: false,
             isOwner,
             endTime: auction.endTime,
             isActive: auction.isActive,
@@ -229,7 +349,9 @@ export default function DashboardPage() {
             bidCount: auction.bidCount
           });
         }
-      }
+      });
+      
+      await Promise.all(userCheckPromises);
       
       setUserBids(userBidsList);
       setOwnerAuctions(ownerAuctionsList);
@@ -240,11 +362,11 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
-  async function withdrawBid(auctionId: number) {
+  const withdrawBid = async (bid: UserBid) => {
     try {
-      setWithdrawing(auctionId);
+      setWithdrawing(bid.auctionId);
       setError('');
       setSuccess('');
       
@@ -256,17 +378,33 @@ export default function DashboardPage() {
       const signer = await provider.getSigner();
       const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
       
-      setSuccess(`Withdrawing bond from auction #${auctionId}...`);
+      setSuccess(`Withdrawing bond from auction #${bid.auctionId}...`);
       
-      const tx = await contract.withdrawBid(auctionId, {
-        gasLimit: 150000
-      });
+      // Dynamic gas estimation based on user status
+      let gasEstimate;
+      let tx;
+      
+      if (bid.isWinner) {
+        // Winners must use withdrawBidAdvanced (based on contract logic)
+        gasEstimate = await contract.withdrawBidAdvanced.estimateGas(bid.auctionId);
+        const gasLimit = gasEstimate * 120n / 100n; // 20% buffer
+        tx = await contract.withdrawBidAdvanced(bid.auctionId, {
+          gasLimit
+        });
+      } else {
+        // Non-winners use regular withdrawBid
+        gasEstimate = await contract.withdrawBid.estimateGas(bid.auctionId);
+        const gasLimit = gasEstimate * 120n / 100n; // 20% buffer
+        tx = await contract.withdrawBid(bid.auctionId, {
+          gasLimit
+        });
+      }
       
       const receipt = await tx.wait();
       
       if (receipt?.status === 1) {
         setSuccess(`✅ Bond withdrawn successfully! Transaction: ${receipt.hash.slice(0, 10)}...`);
-        await loadDashboard(); // Refresh data
+        await loadDashboard();
       } else {
         throw new Error('Withdrawal failed');
       }
@@ -277,9 +415,62 @@ export default function DashboardPage() {
     } finally {
       setWithdrawing(null);
     }
-  }
+  };
 
-  async function declareWinner(auctionId: number, winnerAddress: string, winningAmount: string) {
+  const handleAutoSettle = async (auctionId: number, isAutoTriggered = false) => {
+    try {
+      if (!isAutoTriggered) {
+        setAutoSettling(auctionId);
+      }
+      setError('');
+      setSuccess('');
+      
+      if (!window.ethereum) {
+        throw new Error('Please install MetaMask');
+      }
+
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+      
+      const message = isAutoTriggered 
+        ? `Auto-settling auction #${auctionId}...`
+        : `Settling auction #${auctionId}...`;
+      setSuccess(message);
+      
+      // Dynamic gas estimation
+      const gasEstimate = await contract.settleAuction.estimateGas(auctionId);
+      const gasLimit = gasEstimate * 120n / 100n; // 20% buffer
+      
+      const tx = await contract.settleAuction(auctionId, {
+        gasLimit
+      });
+      
+      const receipt = await tx.wait();
+      
+      if (receipt?.status === 1) {
+        const successMessage = isAutoTriggered
+          ? `✅ Auction #${auctionId} auto-settled! Transaction: ${receipt.hash.slice(0, 10)}...`
+          : `✅ Auction settled! Transaction: ${receipt.hash.slice(0, 10)}...`;
+        setSuccess(successMessage);
+        await loadDashboard();
+      } else {
+        throw new Error('Settlement failed');
+      }
+      
+    } catch (error: any) {
+      console.error('Settlement error:', error);
+      if (!isAutoTriggered) {
+        setError(`Failed to settle auction: ${error.message}`);
+      }
+    } finally {
+      if (!isAutoTriggered) {
+        setAutoSettling(null);
+      }
+    }
+  };
+
+  const declareWinner = async (auctionId: number, winnerAddress: string, winningAmount: string) => {
     try {
       setDeclaringWinner(auctionId);
       setError('');
@@ -297,15 +488,19 @@ export default function DashboardPage() {
       
       setSuccess(`Declaring winner for auction #${auctionId}...`);
       
+      // Dynamic gas estimation
+      const gasEstimate = await contract.declareWinner.estimateGas(auctionId, winnerAddress, amountWei);
+      const gasLimit = gasEstimate * 120n / 100n; // 20% buffer
+      
       const tx = await contract.declareWinner(auctionId, winnerAddress, amountWei, {
-        gasLimit: 200000
+        gasLimit
       });
       
       const receipt = await tx.wait();
       
       if (receipt?.status === 1) {
         setSuccess(`✅ Winner declared! Transaction: ${receipt.hash.slice(0, 10)}...`);
-        await loadDashboard(); // Refresh data
+        await loadDashboard();
       } else {
         throw new Error('Declaration failed');
       }
@@ -316,9 +511,9 @@ export default function DashboardPage() {
     } finally {
       setDeclaringWinner(null);
     }
-  }
+  };
 
-  async function endAuction(auctionId: number) {
+  const endAuction = async (auctionId: number) => {
     try {
       setError('');
       setSuccess('');
@@ -329,8 +524,12 @@ export default function DashboardPage() {
       
       setSuccess(`Ending auction #${auctionId}...`);
       
+      // Dynamic gas estimation
+      const gasEstimate = await contract.endAuction.estimateGas(auctionId);
+      const gasLimit = gasEstimate * 120n / 100n; // 20% buffer
+      
       const tx = await contract.endAuction(auctionId, {
-        gasLimit: 150000
+        gasLimit
       });
       
       const receipt = await tx.wait();
@@ -343,9 +542,9 @@ export default function DashboardPage() {
     } catch (error: any) {
       setError(`Failed to end auction: ${error.message}`);
     }
-  }
+  };
 
-  async function settleAuction(auctionId: number) {
+  const settleAuction = async (auctionId: number) => {
     try {
       setError('');
       setSuccess('');
@@ -356,8 +555,12 @@ export default function DashboardPage() {
       
       setSuccess(`Settling auction #${auctionId}...`);
       
+      // Dynamic gas estimation
+      const gasEstimate = await contract.settleAuction.estimateGas(auctionId);
+      const gasLimit = gasEstimate * 120n / 100n; // 20% buffer
+      
       const tx = await contract.settleAuction(auctionId, {
-        gasLimit: 150000
+        gasLimit
       });
       
       const receipt = await tx.wait();
@@ -370,29 +573,16 @@ export default function DashboardPage() {
     } catch (error: any) {
       setError(`Failed to settle auction: ${error.message}`);
     }
-  }
+  };
 
-  // If network check completed and it's the wrong network, show the wrong-network UI
+  // Network guard
   if (isCorrectNetwork === false) {
     return (
-      <div className="container mx-auto px-4 py-16 text-center">
-        <div className="text-6xl mb-4">🌐</div>
-        <h2 className="text-2xl font-bold mb-2">Wrong Network</h2>
-        <p className="text-gray-400 mb-4">
-          Please switch to <strong>Sepolia Testnet</strong>
-        </p>
-        <button
-          onClick={async () => {
-            await window.ethereum?.request({
-              method: 'wallet_switchEthereumChain',
-              params: [{ chainId: '0xaa36a7' }],
-            });
-          }}
-          className="px-6 py-3 bg-electric-purple text-white rounded-lg hover:opacity-90"
-        >
-          Switch to Sepolia
-        </button>
-      </div>
+      <NetworkGuard 
+        currentNetwork={currentNetwork}
+        targetNetworkId={TARGET_NETWORK_ID}
+        networkNames={NETWORK_NAMES}
+      />
     );
   }
 
@@ -427,79 +617,44 @@ export default function DashboardPage() {
     <div className="container mx-auto px-4 py-8">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-3xl font-bold mb-2">Your Dashboard</h1>
-        <p className="text-gray-400">
-          Manage your bids, auctions, and withdrawals
-        </p>
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-3xl font-bold mb-2">Your Dashboard</h1>
+            <p className="text-gray-400">
+              Manage your bids, auctions, and withdrawals
+            </p>
+          </div>
+          {ownerAuctions.length > 0 && (
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoSettleEnabled}
+                  onChange={(e) => setAutoSettleEnabled(e.target.checked)}
+                  className="form-checkbox h-4 w-4 text-electric-purple rounded"
+                />
+                <span className="text-sm text-gray-400">
+                  <FaRobot className="inline mr-1" />
+                  Auto-Settle
+                </span>
+              </label>
+              <div className="relative group">
+                <span className="text-xs text-gray-500">ⓘ</span>
+                <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-64 p-2 bg-gray-900 text-xs text-gray-300 rounded-lg shadow-lg z-10">
+                  Automatically settles auctions 24 hours after they end
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Wallet Info */}
-      <div className="grid md:grid-cols-3 gap-6 mb-8">
-        <div className="bg-obsidian/60 p-6 rounded-xl border border-electric-purple/30">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 bg-gradient-to-br from-electric-purple to-deep-violet rounded-lg flex items-center justify-center">
-              <FaWallet className="text-xl" />
-            </div>
-            <div>
-              <h3 className="font-bold">Wallet</h3>
-              <p className="text-sm text-gray-400">{account.slice(0, 8)}...{account.slice(-6)}</p>
-            </div>
-          </div>
-          <div className="text-2xl font-bold flex items-center gap-2">
-            <FaEthereum className="text-electric-purple" />
-            {parseFloat(balance).toFixed(4)} ETH
-          </div>
-        </div>
-        
-        <div className="bg-obsidian/60 p-6 rounded-xl border border-electric-purple/30">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 bg-gradient-to-br from-green-500 to-emerald-700 rounded-lg flex items-center justify-center">
-              <FaTrophy className="text-xl" />
-            </div>
-            <div>
-              <h3 className="font-bold">Active Bids</h3>
-              <p className="text-sm text-gray-400">Placed by you</p>
-            </div>
-          </div>
-          <div className="text-2xl font-bold">
-            {userBids.filter(bid => bid.isActive).length}
-          </div>
-        </div>
-        
-        <div className="bg-obsidian/60 p-6 rounded-xl border border-electric-purple/30">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-cyan-700 rounded-lg flex items-center justify-center">
-              <FaGavel className="text-xl" />
-            </div>
-            <div>
-              <h3 className="font-bold">Your Auctions</h3>
-              <p className="text-sm text-gray-400">Created by you</p>
-            </div>
-          </div>
-          <div className="text-2xl font-bold">
-            {ownerAuctions.length}
-          </div>
-        </div>
-      </div>
+      <WalletInfo account={account} balance={balance} userBids={userBids} ownerAuctions={ownerAuctions} />
 
       {/* Status Messages */}
-      {success && (
-        <div className="mb-6 p-4 bg-green-900/30 border border-green-500/50 rounded-lg">
-          <div className="flex items-center gap-2 text-green-400">
-            <FaCheck />
-            <span>{success}</span>
-          </div>
-        </div>
-      )}
-
-      {error && (
-        <div className="mb-6 p-4 bg-red-900/30 border border-red-500/50 rounded-lg">
-          <div className="flex items-center gap-2 text-red-400">
-            <FaExclamationTriangle />
-            <span>Error: {error}</span>
-          </div>
-        </div>
-      )}
+      <StatusMessage type="success" message={success} />
+      <StatusMessage type="error" message={error} />
 
       {/* Tabs */}
       <div className="mb-6 border-b border-gray-800">
@@ -514,7 +669,7 @@ export default function DashboardPage() {
           >
             <div className="flex items-center gap-2">
               <FaMoneyBillWave />
-              Your Bids & Withdrawals
+              Your Bids & Withdrawals ({userBids.length})
             </div>
           </button>
           
@@ -548,490 +703,39 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Bids & Withdrawals Tab */}
+      {/* Content based on active tab */}
       {activeTab === 'bids' && (
-        <div className="space-y-4">
-          {userBids.length === 0 ? (
-            <div className="text-center py-12">
-              <div className="text-6xl mb-4">💸</div>
-              <h3 className="text-xl font-bold mb-2">No Bids Found</h3>
-              <p className="text-gray-400 mb-4">You haven't placed any bids yet</p>
-              <Link
-                href="/auctions"
-                className="px-6 py-2 bg-electric-purple text-white rounded-lg hover:opacity-90 inline-block"
-              >
-                Browse Auctions
-              </Link>
-            </div>
-          ) : (
-            <>
-              {/* Withdrawable Bids */}
-              {userBids.filter(bid => bid.canWithdraw && !bid.hasWithdrawn).length > 0 && (
-                <div className="mb-6">
-                  <h3 className="text-lg font-bold mb-3 flex items-center gap-2 text-green-400">
-                    <FaMoneyBillWave />
-                    Available for Withdrawal
-                  </h3>
-                  <div className="space-y-3">
-                    {userBids
-                      .filter(bid => bid.canWithdraw && !bid.hasWithdrawn)
-                      .map(bid => (
-                        <div key={bid.auctionId} className="bg-obsidian/60 p-4 rounded-lg border border-green-500/30">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <h4 className="font-bold">{bid.title}</h4>
-                              <p className="text-sm text-gray-400">
-                                Auction #{bid.auctionId} • Bond: {bid.bondAmount} ETH
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <Link
-                                href={`/bid/${bid.auctionId}`}
-                                className="px-3 py-1 bg-gray-800 text-white rounded-lg text-sm hover:bg-gray-700 flex items-center gap-1"
-                              >
-                                <FaExternalLinkAlt className="text-xs" /> View
-                              </Link>
-                              <button
-                                onClick={() => withdrawBid(bid.auctionId)}
-                                disabled={withdrawing === bid.auctionId}
-                                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
-                              >
-                                {withdrawing === bid.auctionId ? (
-                                  <>
-                                    <FaSpinner className="animate-spin" />
-                                    Withdrawing...
-                                  </>
-                                ) : (
-                                  <>
-                                    <FaMoneyBillWave />
-                                    Withdraw Bond
-                                  </>
-                                )}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Active Bids */}
-              <div className="mb-6">
-                <h3 className="text-lg font-bold mb-3 flex items-center gap-2">
-                  <FaClock />
-                  Active Bids
-                </h3>
-                <div className="space-y-3">
-                  {userBids
-                    .filter(bid => bid.isActive && !bid.canWithdraw)
-                    .map(bid => (
-                      <div key={bid.auctionId} className="bg-obsidian/60 p-4 rounded-lg border border-electric-purple/30">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="flex items-center gap-2 mb-1">
-                              <h4 className="font-bold">{bid.title}</h4>
-                              {bid.isWinner && (
-                                <span className="px-2 py-1 bg-yellow-900/30 text-yellow-400 text-xs rounded-full">
-                                  Leading
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-sm text-gray-400">
-                              Auction #{bid.auctionId} • {bid.bidCount} bids • Ends {bid.endTime.toLocaleDateString()}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <Link
-                              href={`/bid/${bid.auctionId}`}
-                              className="px-4 py-2 bg-electric-purple text-white rounded-lg hover:opacity-90 flex items-center gap-2"
-                            >
-                              <FaEye /> View
-                            </Link>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </div>
-
-              {/* Ended Bids */}
-              <div>
-                <h3 className="text-lg font-bold mb-3 flex items-center gap-2">
-                  <FaHistory />
-                  Ended Bids
-                </h3>
-                <div className="space-y-3">
-                  {userBids
-                    .filter(bid => !bid.isActive)
-                    .map(bid => (
-                      <div key={bid.auctionId} className="bg-obsidian/60 p-4 rounded-lg border border-gray-700">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="flex items-center gap-2 mb-1">
-                              <h4 className="font-bold">{bid.title}</h4>
-                              {bid.isWinner ? (
-                                <span className="px-2 py-1 bg-green-900/30 text-green-400 text-xs rounded-full">
-                                  Winner
-                                </span>
-                              ) : bid.canWithdraw ? (
-                                <span className="px-2 py-1 bg-blue-900/30 text-blue-400 text-xs rounded-full">
-                                  Can Withdraw
-                                </span>
-                              ) : (
-                                <span className="px-2 py-1 bg-gray-700 text-gray-400 text-xs rounded-full">
-                                  Ended
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-sm text-gray-400">
-                              Auction #{bid.auctionId} • {bid.bidCount} bids • Ended {bid.endTime.toLocaleDateString()}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <Link
-                              href={`/bid/${bid.auctionId}`}
-                              className="px-3 py-1 bg-gray-800 text-white rounded-lg text-sm hover:bg-gray-700"
-                            >
-                              View
-                            </Link>
-                            {bid.canWithdraw && !bid.hasWithdrawn && (
-                              <button
-                                onClick={() => withdrawBid(bid.auctionId)}
-                                disabled={withdrawing === bid.auctionId}
-                                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
-                              >
-                                {withdrawing === bid.auctionId ? 'Withdrawing...' : 'Withdraw'}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+        <UserBidsSection 
+          userBids={userBids}
+          withdrawing={withdrawing}
+          withdrawBid={withdrawBid}
+          loadDashboard={loadDashboard}
+          loading={loading}
+        />
       )}
 
-      {/* Your Auctions Tab */}
       {activeTab === 'auctions' && (
-        <div className="space-y-4">
-          {ownerAuctions.length === 0 ? (
-            <div className="text-center py-12">
-              <div className="text-6xl mb-4">🏷️</div>
-              <h3 className="text-xl font-bold mb-2">No Auctions Created</h3>
-              <p className="text-gray-400 mb-4">You haven't created any auctions yet</p>
-              <Link
-                href="/auctions/create"
-                className="px-6 py-2 bg-electric-purple text-white rounded-lg hover:opacity-90 inline-block"
-              >
-                Create Auction
-              </Link>
-            </div>
-          ) : (
-            <>
-              {/* Auctions Needing Action */}
-              {ownerAuctions.filter(auction => auction.canEnd || auction.canSettle || auction.canDeclareWinner).length > 0 && (
-                <div className="mb-6">
-                  <h3 className="text-lg font-bold mb-3 flex items-center gap-2 text-yellow-400">
-                    <FaExclamationTriangle />
-                    Auctions Needing Action
-                  </h3>
-                  <div className="space-y-3">
-                    {ownerAuctions
-                      .filter(auction => auction.canEnd || auction.canSettle || auction.canDeclareWinner)
-                      .map(auction => (
-                        <div key={auction.auctionId} className="bg-obsidian/60 p-4 rounded-lg border border-yellow-500/30">
-                          <div className="flex items-start justify-between mb-3">
-                            <div>
-                              <h4 className="font-bold">{auction.title}</h4>
-                              <p className="text-sm text-gray-400">
-                                Auction #{auction.auctionId} • {auction.bidCount} bids
-                              </p>
-                            </div>
-                            <Link
-                              href={`/bid/${auction.auctionId}`}
-                              className="px-3 py-1 bg-gray-800 text-white rounded-lg text-sm hover:bg-gray-700"
-                            >
-                              View
-                            </Link>
-                          </div>
-                          
-                          <div className="flex flex-wrap gap-2">
-                            {auction.canEnd && (
-                              <button
-                                onClick={() => endAuction(auction.auctionId)}
-                                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
-                              >
-                                End Auction
-                              </button>
-                            )}
-                            
-                            {auction.canSettle && (
-                              <button
-                                onClick={() => settleAuction(auction.auctionId)}
-                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
-                              >
-                                Settle Auction
-                              </button>
-                            )}
-                            
-                            {auction.canDeclareWinner && (
-                              <WinnerDeclarationForm
-                                auctionId={auction.auctionId}
-                                auctionTitle={auction.title}
-                                pendingWinner={auction.pendingWinner}
-                                onDeclareWinner={declareWinner}
-                                isDeclaring={declaringWinner === auction.auctionId}
-                              />
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              )}
-
-              {/* All Your Auctions */}
-              <div>
-                <h3 className="text-lg font-bold mb-3 flex items-center gap-2">
-                  <FaGavel />
-                  All Your Auctions
-                </h3>
-                <div className="space-y-3">
-                  {ownerAuctions.map(auction => (
-                    <div key={auction.auctionId} className="bg-obsidian/60 p-4 rounded-lg border border-electric-purple/30">
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <div className="flex items-center gap-2 mb-1">
-                            <h4 className="font-bold">{auction.title}</h4>
-                            <span className={`px-2 py-1 text-xs rounded-full ${
-                              auction.isActive
-                                ? 'bg-green-900/30 text-green-400'
-                                : auction.settled
-                                ? 'bg-blue-900/30 text-blue-400'
-                                : 'bg-gray-700 text-gray-400'
-                            }`}>
-                              {auction.isActive ? 'Active' : auction.settled ? 'Settled' : 'Ended'}
-                            </span>
-                          </div>
-                          <p className="text-sm text-gray-400">
-                            Auction #{auction.auctionId} • {auction.bidCount} bids • 
-                            {auction.isActive ? ` Ends ${auction.endTime.toLocaleDateString()}` : ' Ended'}
-                          </p>
-                          {auction.pendingWinner && auction.pendingWinner !== ethers.ZeroAddress && (
-                            <p className="text-sm text-gray-400 mt-1">
-                              Winner: {auction.pendingWinner.slice(0, 8)}...{auction.pendingWinner.slice(-6)}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Link
-                            href={`/bid/${auction.auctionId}`}
-                            className="px-4 py-2 bg-electric-purple text-white rounded-lg hover:opacity-90 text-sm"
-                          >
-                            Manage
-                          </Link>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+        <OwnerAuctionsSection 
+          ownerAuctions={ownerAuctions}
+          declaringWinner={declaringWinner}
+          endAuction={endAuction}
+          settleAuction={settleAuction}
+          declareWinner={declareWinner}
+          onAutoSettle={handleAutoSettle}
+          isAutoSettling={autoSettling}
+          loadDashboard={loadDashboard}
+          autoSettleEnabled={autoSettleEnabled}
+        />
       )}
 
-      {/* All Auctions Tab */}
       {activeTab === 'manage' && (
-        <div>
-          <div className="mb-4 flex justify-between items-center">
-            <h3 className="text-lg font-bold">All Auctions ({allAuctions.length})</h3>
-            <button
-              onClick={loadDashboard}
-              className="px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700 text-sm flex items-center gap-2"
-            >
-              <FaSpinner className={loading ? 'animate-spin' : ''} />
-              Refresh
-            </button>
-          </div>
-          
-          {allAuctions.length === 0 ? (
-            <div className="text-center py-12">
-              <div className="text-6xl mb-4">🏷️</div>
-              <h3 className="text-xl font-bold mb-2">No Auctions Found</h3>
-              <p className="text-gray-400">No auctions have been created yet</p>
-            </div>
-          ) : (
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {allAuctions.map(auction => {
-                const isOwner = auction.owner.toLowerCase() === account.toLowerCase();
-                const isWinner = auction.pendingWinner.toLowerCase() === account.toLowerCase();
-                const timeRemaining = auction.endTime.getTime() - Date.now();
-                const isEnded = timeRemaining <= 0;
-                const hoursRemaining = Math.max(0, Math.floor(timeRemaining / (1000 * 60 * 60)));
-                
-                return (
-                  <div key={auction.id} className="bg-obsidian/60 p-4 rounded-lg border border-electric-purple/30">
-                    <div className="flex justify-between items-start mb-3">
-                      <div>
-                        <h4 className="font-bold line-clamp-1">{auction.title}</h4>
-                        <p className="text-sm text-gray-400">#{auction.id}</p>
-                      </div>
-                      {isOwner && (
-                        <span className="px-2 py-1 bg-purple-900/30 text-purple-400 text-xs rounded-full">
-                          Owner
-                        </span>
-                      )}
-                      {isWinner && !isOwner && (
-                        <span className="px-2 py-1 bg-yellow-900/30 text-yellow-400 text-xs rounded-full">
-                          Leading
-                        </span>
-                      )}
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-2 mb-3">
-                      <div className="text-center p-2 bg-deep-violet/30 rounded">
-                        <div className="text-xs text-gray-400">Bids</div>
-                        <div className="font-bold">{auction.bidCount}</div>
-                      </div>
-                      <div className="text-center p-2 bg-deep-violet/30 rounded">
-                        <div className="text-xs text-gray-400">Status</div>
-                        <div className={`font-bold ${auction.isActive && !isEnded ? 'text-green-400' : 'text-gray-400'}`}>
-                          {auction.isActive && !isEnded ? `${hoursRemaining}h` : 'Ended'}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="flex justify-between items-center">
-                      <div className="text-xs text-gray-500">
-                        {auction.owner.slice(0, 6)}...{auction.owner.slice(-4)}
-                      </div>
-                      <Link
-                        href={`/bid/${auction.id}`}
-                        className="px-3 py-1 bg-electric-purple text-white rounded-lg text-sm hover:opacity-90"
-                      >
-                        View
-                      </Link>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        <AuctionList 
+          allAuctions={allAuctions}
+          account={account}
+          loadDashboard={loadDashboard}
+          loading={loading}
+        />
       )}
-    </div>
-  );
-}
-
-// Winner Declaration Form Component
-function WinnerDeclarationForm({ 
-  auctionId, 
-  auctionTitle, 
-  pendingWinner,
-  onDeclareWinner,
-  isDeclaring 
-}: { 
-  auctionId: number;
-  auctionTitle: string;
-  pendingWinner: string;
-  onDeclareWinner: (auctionId: number, winner: string, amount: string) => Promise<void>;
-  isDeclaring: boolean;
-}) {
-  const [winnerAddress, setWinnerAddress] = useState(pendingWinner);
-  const [winningAmount, setWinningAmount] = useState('');
-  const [showForm, setShowForm] = useState(false);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (winnerAddress && winningAmount) {
-      onDeclareWinner(auctionId, winnerAddress, winningAmount);
-      setShowForm(false);
-    }
-  };
-
-  if (!showForm) {
-    return (
-      <button
-        onClick={() => setShowForm(true)}
-        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
-      >
-        Declare Winner
-      </button>
-    );
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-obsidian rounded-xl border border-electric-purple/50 w-full max-w-md">
-        <div className="p-6">
-          <h3 className="text-xl font-bold mb-2">Declare Winner</h3>
-          <p className="text-gray-400 mb-4">
-            Auction: {auctionTitle} (#{auctionId})
-          </p>
-          
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                Winner's Address
-              </label>
-              <input
-                type="text"
-                value={winnerAddress}
-                onChange={(e) => setWinnerAddress(e.target.value)}
-                className="w-full px-4 py-2 bg-deep-violet/30 border border-electric-purple/30 rounded-lg text-white"
-                placeholder="0x..."
-                required
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                Winning Amount (ETH)
-              </label>
-              <input
-                type="number"
-                value={winningAmount}
-                onChange={(e) => setWinningAmount(e.target.value)}
-                className="w-full px-4 py-2 bg-deep-violet/30 border border-electric-purple/30 rounded-lg text-white"
-                placeholder="0.5"
-                step="0.001"
-                min="0"
-                required
-              />
-            </div>
-            
-            <div className="flex gap-3 pt-4">
-              <button
-                type="button"
-                onClick={() => setShowForm(false)}
-                className="flex-1 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700"
-                disabled={isDeclaring}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={isDeclaring || !winnerAddress || !winningAmount}
-                className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {isDeclaring ? (
-                  <>
-                    <FaSpinner className="animate-spin" />
-                    Declaring...
-                  </>
-                ) : (
-                  'Declare Winner'
-                )}
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
     </div>
   );
 }
