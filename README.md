@@ -33,20 +33,28 @@
 
 ```mermaid
 graph TB
-    A[User Frontend] --> B[Next.js 14 + TypeScript]
-    B --> C[Ethers.js v6]
-    C --> D[PrivaBid Smart Contract]
-    D --> E[FHE Encryption Layer]
-    E --> F[Encrypted Bid Storage (On-chain)]
-
-    G[MetaMask Wallet] --> C
-    H[Vercel Hosting] --> B
-    I[Sepolia Testnet] --> D
-
+    subgraph "PrivaBid Architecture"
+        A[User Frontend<br/>Next.js 14 + TypeScript] --> B[Ethers.js v6]
+        B --> C[PrivaBid Smart Contract]
+        C --> D[FHE Encryption Layer<br/>FHEVM.js]
+        D --> E[Encrypted Bid Storage<br/>On-chain]
+        
+        F[MetaMask Wallet] --> B
+        G[Vercel Hosting] --> A
+        H[Sepolia Testnet] --> C
+        
+        %% AUTO-SETTLE INNOVATION
+        I[Auto-Settle Engine] -.->|"24h timer +<br/>frontend coordination"| C
+        J[Dashboard Monitor] --> I
+        I --> K[Automatic Settlement]
+        K --> L[Instant Winner Payouts]
+    end
+    
     style A fill:#6d28d9,color:#fff
-    style D fill:#1a0b2e,color:#fff
+    style C fill:#1a0b2e,color:#fff
+    style I fill:#10b981,color:#000
+    style K fill:#f59e0b,color:#000
 ```
-
 ---
 
 ## 📁 Project Structure
