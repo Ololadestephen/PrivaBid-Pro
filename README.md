@@ -268,7 +268,7 @@ Built for **Builder Track Program**
 
 ## 🙏 Acknowledgments
 
-* FHEVM Team
+* Zama Team
 * Hardhat
 * Vercel
 * Sepolia Testnet
