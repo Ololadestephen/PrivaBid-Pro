@@ -7,7 +7,8 @@
 ---
 
 ## 🚀 Live Demo
-
+## 🎥 Demo Video
+[![PrivaBid Demo](https://img.youtube.com/vi/ltax-nSa7oQ/0.jpg)](https://www.youtube.com/watch?v=ltax-nSa7oQ)
 * **🌐 Frontend**: [https://privabid.vercel.app](https://privabid.vercel.app)
 * **📜 Contract**: `0xd2db4e3BB54a014177F5a58A6F00d3db3452a4a3`
 * **🐙 GitHub**: [https://github.com/Ololadestephen/PrivaBid-Pro](https://github.com/Ololadestephen/PrivaBid-Pro)
@@ -21,7 +22,7 @@
 | 🛡️ Encrypted Bidding  | Bid amounts encrypted using FHE (Fully Homomorphic Encryption) |
 | 🔒 One-Bid-Per-Address | Prevents bid manipulation and spam                             |
 | 💰 Bond System         | 0.01 ETH refundable bond per bid (anti-spam)                   |
-| 👑 Owner Controls      | Auction creation, ending, and winner declaration               |
+| 🤖 Automated Settlement | Auctions finalize automatically after ending (owner signature only)             |
 | 📊 Dashboard           | Complete bid and auction management interface                  |
 | ⚡ Real-time Updates    | Live auction status and bid tracking                           |
 | 🔐 Wallet Integration  | MetaMask support with network validation                       |
@@ -36,7 +37,7 @@ graph TB
     B --> C[Ethers.js v6]
     C --> D[PrivaBid Smart Contract]
     D --> E[FHE Encryption Layer]
-    E --> F[Encrypted On-chain Storage]
+    E --> F[Encrypted Bid Storage (On-chain)]
 
     G[MetaMask Wallet] --> C
     H[Vercel Hosting] --> B
@@ -52,7 +53,7 @@ graph TB
 
 ```
 PrivaBid-Pro/
-├── frontend/                    # Next.js 14 Frontend Application
+├── privabid-frontend/           # Next.js 14 Frontend Application
 │   ├── app/                     # App Router (Next.js 13+)
 │   │   ├── auctions/            # Auction listing & creation
 │   │   ├── bid/[id]/            # Individual bid pages
@@ -63,13 +64,14 @@ PrivaBid-Pro/
 │   ├── constants/               # Contract ABIs & addresses
 │   ├── public/                  # Static assets
 │   └── package.json             # Frontend dependencies
-├── contracts/                   # Hardhat Smart Contract Project
+├── privabid-fhevm/                   # Hardhat Smart Contract Project
 │   ├── contracts/
 │   │   └── PrivaBidAuction.sol  # Main auction contract
 │   ├── scripts/                 # Deployment scripts
 │   ├── test/                    # Comprehensive test suite
 │   ├── hardhat.config.ts        # Hardhat configuration
 │   └── package.json             # Contract dependencies
+├── lib/                         # Shared FHEVM utilities
 ├── .env.example                 # Environment template
 ├── .gitignore                   # Git exclusion rules
 └── README.md                    # This file
@@ -99,7 +101,7 @@ cd PrivaBid-Pro
 ### 2. Smart Contracts Development
 
 ```bash
-cd contracts
+cd privabid-fhevm
 npm install
 cp .env.example .env
 
@@ -118,7 +120,7 @@ npx hardhat run scripts/deploy.ts --network sepolia
 ### 3. Frontend Development
 
 ```bash
-cd frontend
+cd privabid-frontend
 npm install
 
 npm run dev
@@ -210,8 +212,8 @@ npx hardhat test
 ### Vercel (Frontend)
 
 1. Connect GitHub repo
-2. Set **Root Directory** → `frontend`
-3. Add environment variable:
+2. Set **Root Directory** → `privabid-frontend`
+3. Add environment variables:
 
 ```
 NEXT_PUBLIC_CONTRACT_ADDRESS=0xd2db4e3BB54a014177F5a58A6F00d3db3452a4a3
